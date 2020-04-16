@@ -1,0 +1,1020 @@
+library(readxl)
+library(ggplot2)
+library(VIM)
+library(dplyr) 
+library(readxl)
+library(class)
+library(DataCombine)
+library(lubridate)
+library(ggthemes)
+library(RColorBrewer)
+library(reshape)
+library(e1071)
+library(xtable)
+library(zoo)
+library(roll)
+library(viridis)
+library(corrplot)
+library(gridExtra)
+library(quadprog)
+library(NlcOptim)
+library(pracma)
+library(tidyr)
+#########################################################################################
+#              0. Intro: Upload Data                                                    #
+#                                                                                       #
+#########################################################################################
+
+CA <- read.csv("HFRX_historical_HFRXCA.csv")
+ED <- read.csv("HFRX_historical_HFRXED.csv")
+EH <- read.csv("HFRX_historical_HFRXEH.csv")
+EMN <- read.csv("HFRX_historical_HFRXEMN.csv")
+GL <- read.csv("HFRX_historical_HFRXGL.csv")
+M <- read.csv("HFRX_historical_HFRXM.csv")
+MA <- read.csv("HFRX_historical_HFRXMA.csv")
+RVA <- read.csv("HFRX_historical_HFRXRVA.csv")
+DAX_10_Lufthansa <- read_excel("DAX_10_Lufthansa.xlsx", 
+                               col_types = c("date", "numeric", "numeric", 
+                                             "numeric", "numeric", "numeric", 
+                                             "numeric", "numeric", "numeric", 
+                                             "numeric", "numeric"))
+#including volume
+DAX_10_vol <- read_excel("DAX_10_Lufthansa_vol.xlsx", 
+                         col_types = c("date", "numeric", "numeric", 
+                                       "numeric", "numeric", "numeric", 
+                                       "numeric", "numeric", "numeric", 
+                                       "numeric", "numeric", "numeric", "numeric", 
+                                       "numeric", "numeric", "numeric", 
+                                       "numeric", "numeric", "numeric", 
+                                       "numeric", "numeric"))
+
+
+CA$Date <- as.Date(CA$Date, format="%m/%d/%Y")
+ED$Date <- as.Date(ED$Date, format="%m/%d/%Y")
+EH$Date <- as.Date(EH$Date, format="%m/%d/%Y")
+EMN$Date <- as.Date(EMN$Date, format="%m/%d/%Y")
+GL$Date <- as.Date(GL$Date, format="%m/%d/%Y")
+M$Date <- as.Date(M$Date, format="%m/%d/%Y")
+MA$Date <- as.Date(MA$Date, format="%m/%d/%Y")
+RVA$Date <- as.Date(RVA$Date, format="%m/%d/%Y")
+
+# fill up missing values
+DAX <- kNN(DAX_10_Lufthansa, k=1)
+DAX <- subset(DAX, select = -c(12:22))
+DAX_vol <- kNN(DAX_10_vol, k=1)
+DAX_vol <- subset(DAX_vol, select = -c(22:42))
+
+#calculate DAX 10 weighted with market cap
+cap <- function(price, vol){
+  return(price*vol)
+}
+
+
+#market cap
+DAX_vol$SIE_cap <- mapply(cap, DAX_vol [,2], DAX_vol[,12])
+DAX_vol$ALV_cap <- mapply(cap, DAX_vol [,3], DAX_vol[,13]) 
+DAX_vol$ADS_cap <- mapply(cap, DAX_vol [,4], DAX_vol[,14]) 
+DAX_vol$BAS_cap <- mapply(cap, DAX_vol [,5], DAX_vol[,15]) 
+DAX_vol$BAY_cap <- mapply(cap, DAX_vol [,6], DAX_vol[,16])
+DAX_vol$BEI_cap <- mapply(cap, DAX_vol [,7], DAX_vol[,17]) 
+DAX_vol$CONT_cap <- mapply(cap, DAX_vol [,8], DAX_vol[,18]) 
+DAX_vol$DBK_cap <- mapply(cap, DAX_vol [,9], DAX_vol[,19]) 
+DAX_vol$LIN_cap <- mapply(cap, DAX_vol [,10], DAX_vol[,20]) 
+DAX_vol$LHA_cap <- mapply(cap, DAX_vol [,11], DAX_vol[,21]) 
+
+
+DAX_vol$sum_cap <- c (rowSums(DAX_vol[22:31]))
+
+weighted <- function(cap, capsum){
+  return(cap/capsum)
+}
+
+DAX_vol$SIE_weights <- mapply(weighted, DAX_vol[,22], DAX_vol[,32])
+DAX_vol$ALV_weights <- mapply(weighted, DAX_vol[,23], DAX_vol[,32]) 
+DAX_vol$ADS_weights <- mapply(weighted, DAX_vol[,24], DAX_vol[,32]) 
+DAX_vol$BAS_weights <- mapply(weighted, DAX_vol[,25], DAX_vol[,32]) 
+DAX_vol$BAY_weights <- mapply(weighted, DAX_vol[,26], DAX_vol[,32])
+DAX_vol$BEI_weights <- mapply(weighted, DAX_vol[,27], DAX_vol[,32]) 
+DAX_vol$CONT_weights <- mapply(weighted, DAX_vol[,28], DAX_vol[,32]) 
+DAX_vol$DBK_weights <- mapply(weighted, DAX_vol[,29], DAX_vol[,32]) 
+DAX_vol$LIN_weights <- mapply(weighted, DAX_vol[,30], DAX_vol[,32]) 
+DAX_vol$LHA_weights <- mapply(weighted, DAX_vol[,31], DAX_vol[,32]) 
+
+DAX_vol$sum_weights <- c (rowSums(DAX_vol[33:42]))
+
+#DAX_vol$DAX10 <- c (rowSums(DAX_vol[33:42]))
+DAX_vol$Date <- as_date(DAX_vol$Date)
+DAX_vol <- DAX_vol%>% arrange(Date)
+DAX_weights <- subset(DAX_vol, select = -c(12:32))
+sum(is.na(DAX_weights$sum_weights))
+DAX_weights <- na.locf(DAX_weights, fromLast = TRUE)
+#DAX_weights <- kNN(DAX_weights, k=1)
+#DAX_weights <- subset(DAX_weights, select = -c(22:44))
+DAX_weights$sum_weights <- c (rowSums(DAX_weights[12:21])) #check if all 1, no more missing values
+sum(is.na(DAX_weights$sum_weights))
+DAX_weights <- subset(DAX_weights, select = -c(22))
+
+################### returns and return plots ###################################
+
+# calculate returns
+#CA
+CA_returns <- log(CA[,3])
+CA_returns <- -diff(CA_returns)
+CA_returns_ordered <- sort(CA_returns)
+#ED
+ED_returns <- log(ED[,3])
+ED_returns <- -diff(ED_returns)
+ED_returns_ordered <- sort(ED_returns)
+#EH
+EH_returns <- log(EH[,3])
+EH_returns <- -diff(EH_returns)
+EH_returns_ordered <- sort(EH_returns)
+#EMN
+EMN_returns <- log(EMN[,3])
+EMN_returns <- -diff(EMN_returns)
+EMN_returns_ordered <- sort(EMN_returns)
+#GL
+GL_returns <- log(GL[,3])
+GL_returns <- -diff(GL_returns)
+GL_returns_ordered <- sort(GL_returns)
+#M
+M_returns <- log(M[,3])
+M_returns <- -diff(M_returns)
+M_returns_ordered <- sort(M_returns)
+#MA
+MA_returns <- log(MA[,3])
+MA_returns <- -diff(MA_returns)
+MA_returns_ordered <- sort(MA_returns)
+#RVA
+RVA_returns <- log(RVA[,3])
+RVA_returns <- -diff(RVA_returns)
+RVA_returns_ordered <- sort(RVA_returns)
+
+#DAX10 return matrix
+DAX_returns <- DAX_weights
+DAX_returns <- cbind("Date"=as.Date(DAX[2:nrow(DAX_returns),1]),data.frame(apply(log(DAX_returns[,2:11]),2,diff)), data.frame(DAX_weights[2:nrow(DAX_returns), 12:21]))
+DAX_returns$Date <- as_date(DAX_returns$Date)
+DAX_returns <- DAX_returns%>% arrange(Date)
+DAX_returns$DAX10_return <- DAX_returns$SIE*DAX_returns$SIE_weights+
+                                     DAX_returns$ALV*DAX_returns$ALV_weights+
+                                     DAX_returns$ADS*DAX_returns$ADS_weights+
+                                     DAX_returns$BAS*DAX_returns$BAS_weights+
+                                     DAX_returns$BAY*DAX_returns$BAY_weights+
+                                     DAX_returns$BEI*DAX_returns$BEI_weights+
+                                     DAX_returns$CONT*DAX_returns$CONT_weights+
+                                     DAX_returns$DBK*DAX_returns$DBK_weights+
+                                     DAX_returns$LIN*DAX_returns$LIN_weights+
+                                     DAX_returns$LHA*DAX_returns$LHA_weights
+
+#hedge fund return matrix
+HF_returns <- data.frame(cbind("Date"=CA[,1], "CA"=CA_returns, "ED"=ED_returns, "EH"=EH_returns, "EMN"=EMN_returns, "GL"=GL_returns, "M"=M_returns, "MA"=MA_returns, "RVA"=RVA_returns))
+HF_prices <- data.frame(cbind("Date"=CA[,1], "CA"=CA[,3], "ED"=ED[,3], "EH"=EH[,3], "EMN"=EMN[,3], "GL"=GL[,3], "M"=M[,3], "MA"=MA[,3], "RVA"=RVA[,3]))
+HF_returns$Date <- as_date(HF_returns$Date)
+HF_prices$Date <- as_date(HF_prices$Date)
+HF_returns <- HF_returns%>% arrange(Date)
+HF_prices <- HF_prices%>% arrange(Date)
+
+#overall return matrix
+ALL_returns <- merge(HF_returns,DAX_returns, by= "Date")
+
+#overall price matrix
+#concert DAX price to starting at 1000
+DAX_conv <- merge(DAX_weights, DAX_returns, by= "Date")
+DAX_conv <- subset(DAX_conv, select=-c(12:41))
+DAX_conv$DAX10_price_conv <- 0
+add <- data.frame(DAX_weights[1,1:11], 0, 1000)
+DAX_conv <- InsertRow(DAX_conv, add, RowNum = 1)
+for (row in 2:nrow(DAX_conv)) {
+  DAX_conv$DAX10_price_conv[row]=DAX_conv$DAX10_price_conv[row-1]*exp(DAX_conv$DAX10_return[row])
+}
+DAX_conv <- subset(DAX_conv, select=-c(12))
+
+STOCK_prices <- DAX_weights[,1:11]
+INDEX_prices <- merge(HF_prices,DAX_conv, by= "Date")
+INDEX_prices <- subset(INDEX_prices, select=-c(10:19))
+names(INDEX_prices)[names(INDEX_prices) == "DAX10_price_conv"] <- "DAX10"
+########### Plot Returns ########################
+
+
+#theme
+nb.cols <- 11
+mycolours <- colorRampPalette(brewer.pal(12, "Set3"))(nb.cols)
+white.text <- element_text(color = "white")
+
+#price plot Indices with conv DAX to start at 1000
+INDEX_prices_plot <- melt(INDEX_prices, id.vars = "Date")
+ggplot(data=INDEX_prices_plot, aes(x=Date)) + 
+  geom_line(key_glyph="rect", aes(y=value, colour=variable, group=variable))+ 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable)) + 
+  geom_line(key_glyph="rect", aes(y=value, colour=variable, group=variable))+ 
+  geom_line(key_glyph="rect", aes(y=value, colour=variable, group=variable))+ 
+  geom_line(key_glyph="rect", aes(y=value, colour=variable, group=variable)) + 
+  geom_line(key_glyph="rect", aes(y=value, colour=variable, group=variable))+ 
+  geom_line(key_glyph="rect", aes(y=value, colour=variable, group=variable))+ 
+  geom_line(key_glyph="rect", aes(y=value, colour=variable, group=variable))+
+  geom_line(key_glyph="rect", aes(y=value, colour=variable, group=variable))+ 
+  theme_solarized(light=FALSE) +
+  theme(legend.title=element_blank(), text=white.text, axis.title=white.text, title=white.text, axis.text=white.text)+
+  labs(y="Price", x="Time")+
+  scale_colour_manual(values=mycolours)  
+ggsave(
+  "Prices_INDEX",
+  plot = last_plot(),
+  device = "jpeg",
+  dpi = 500
+)
+
+
+#price plot stocks 
+STOCK_prices_plot <- melt(STOCK_prices, id.vars = "Date")
+ggplot(data=STOCK_prices_plot, aes(x=Date)) + 
+  geom_line(key_glyph="rect", aes(y=value, colour=variable, group=variable))+ 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable)) + 
+  geom_line(key_glyph="rect", aes(y=value, colour=variable, group=variable))+ 
+  geom_line(key_glyph="rect", aes(y=value, colour=variable, group=variable))+ 
+  geom_line(key_glyph="rect", aes(y=value, colour=variable, group=variable)) + 
+  geom_line(key_glyph="rect", aes(y=value, colour=variable, group=variable))+ 
+  geom_line(key_glyph="rect", aes(y=value, colour=variable, group=variable))+ 
+  geom_line(key_glyph="rect", aes(y=value, colour=variable, group=variable))+
+  geom_line(key_glyph="rect", aes(y=value, colour=variable, group=variable))+ 
+  geom_line(key_glyph="rect", aes(y=value, colour=variable, group=variable))+ 
+  theme_solarized(light=FALSE) +
+  theme(legend.title=element_blank(), text=white.text, axis.title=white.text, title=white.text, axis.text=white.text)+
+  labs(y="Price", x="Time", fill="Indices")+
+  scale_colour_manual(values=mycolours)  
+ggsave(
+  "Prices_STOCKS",
+  plot = last_plot(),
+  device = "jpeg",
+  dpi = 500
+)
+
+
+#INDEX return plot
+INDEX_returns_plot <- ALL_returns[c(1,30,2,3,4,5,6,7,8,9)]
+INDEX_returns_plot <- melt(data = INDEX_returns_plot, id.vars = "Date")
+ggplot(data=INDEX_returns_plot, aes(x=Date)) + 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+ 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable)) + 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+ 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+ 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable)) + 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+ 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+ 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+ 
+  theme_solarized(light=FALSE)+
+  theme(legend.title=element_blank(), text=white.text, axis.title=white.text, title=white.text, axis.text=white.text)+
+  labs(y="Return", x="Time")+
+  scale_colour_manual(values=mycolours)
+ # ylim(-0.2,0.2)
+ggsave(
+  "Returns_INDEX",
+  plot = last_plot(),
+  device = "jpeg",
+  dpi = 500
+)
+
+#STOCK and DAX return plot
+STOCK_returns_plot <- ALL_returns[c(1,30,10,11,12,13,14,15,16,17,18,19)]
+STOCK_returns_plot <- melt(data = STOCK_returns_plot, id.vars = "Date")
+ggplot(data=STOCK_returns_plot, aes(x=Date)) + 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+ 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable)) + 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+ 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+ 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable)) + 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+ 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+ 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+ 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+
+  theme_solarized(light=FALSE)+
+  theme(legend.title=element_blank(), text=white.text, axis.title=white.text, title=white.text, axis.text=white.text)+
+  labs(y="Return", x="Time")+
+  scale_colour_manual(values=mycolours)
+ggsave(
+  "Returns_STOCKS",
+  plot = last_plot(),
+  device = "jpeg",
+  dpi = 500
+)
+
+############ Measures ########################
+
+ALL_returns <- subset(ALL_returns, select=-c(20:29))
+names(ALL_returns)[names(ALL_returns) == "DAX10_return"] <- "DAX10"
+
+#overall
+#daily
+ALL_mean_daily <- apply(ALL_returns[,2:ncol(ALL_returns)],2,mean)
+ALL_vol_daily <- apply(ALL_returns[,2:ncol(ALL_returns)],2,sd)
+ALL_sr_daily <- (ALL_mean_daily)/ALL_vol_daily
+ALL_skew <- apply(ALL_returns[,2:ncol(ALL_returns)],2,skewness)
+ALL_kurt <- apply(ALL_returns[,2:ncol(ALL_returns)],2,kurtosis)
+
+#yearly
+ALL_mean_yearly <- apply(ALL_returns[,2:ncol(ALL_returns)],2,mean)*250
+ALL_vol_yearly <- apply(ALL_returns[,2:ncol(ALL_returns)],2,sd)*sqrt(250)
+ALL_sr_yearly <- (ALL_mean_yearly)/ALL_vol_yearly
+
+overall_daily <- rbind("Mean" = ALL_mean_daily, "StdDev" = ALL_vol_daily, "SharpeRatio" = ALL_sr_daily, "Skewness" = ALL_skew, "Kurtosis"= ALL_kurt)
+xtable(overall_daily)
+xtable(overall_daily[,1:8], type = "latex", tabular.environment="longtable", digits = 4)
+xtable(overall_daily[,9:15], type = "latex", tabular.environment="longtable", digits = 4)
+xtable(overall_daily[,16:19], type = "latex", tabular.environment="longtable", digits=4)
+
+overall_yearly <- rbind("Mean" = ALL_mean_yearly, "StdDev" = ALL_vol_yearly, "SharpeRatio" = ALL_sr_yearly, "Skewness" = ALL_skew, "Kurtosis"= ALL_kurt)
+xtable(overall_yearly)
+xtable(overall_yearly[,1:8], type = "latex", tabular.environment="longtable", digits = 4)
+xtable(overall_yearly[,9:15], type = "latex", tabular.environment="longtable", digits = 4)
+xtable(overall_yearly[,16:19], type = "latex", tabular.environment="longtable", digits=4)
+
+##############moving window average
+
+#manual version, yearly
+avg_ret <- function(ret) {
+  avg <- c()
+  for (i in 500:length(ret)) {
+    avg[(i-499)] <- mean(ret[(i-499):i])*250
+  }
+  return(avg)
+}
+
+HFDAX_avg_yearly <- cbind("Date"=ALL_returns[500:nrow(ALL_returns),1],data.frame(apply(ALL_returns[,c(2:9,20)],2,avg_ret)))
+stocksDAX_avg_yearly <- cbind("Date"=ALL_returns[500:nrow(ALL_returns),1],data.frame(apply(ALL_returns[,c(10:20)],2,avg_ret)))
+
+#zoo version, 500 days, daily
+HFDAX_avg_daily <- cbind("Date"=ALL_returns[500:nrow(ALL_returns),1],data.frame(rollmean(ALL_returns[,c(2:9,20)],500)))
+stocksDAX_avg_daily <- cbind("Date"=ALL_returns[500:nrow(ALL_returns),1],data.frame(rollmean(ALL_returns[,c(10:20)],500)))
+
+#plot with zoo version, HFDAX, 500 days
+HFDAX_avg_daily_plot <- melt(data = HFDAX_avg_daily, id.vars = "Date")
+ggplot(data=HFDAX_avg_daily_plot, aes(x=Date)) + 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+ 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable)) + 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+ 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+ 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable)) + 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+ 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+ 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+ 
+  theme_solarized(light=FALSE)+
+  theme(legend.title=element_blank(), text=white.text, axis.title=white.text, title=white.text, axis.text=white.text)+
+  labs(y="Daily Return", x="Time")+
+  scale_colour_manual(values=mycolours)
+#ggsave(
+ # "MA_HFDAX",
+#  plot = last_plot(),
+#  device = "jpeg",
+#  dpi = 500
+)
+
+#plot with zoo version, Dax and stocks, 500 days
+stocksDAX_avg_daily_plot <- melt(data = stocksDAX_avg_daily, id.vars = "Date")
+ggplot(data=stocksDAX_avg_daily_plot, aes(x=Date)) + 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+ 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable)) + 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+ 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+ 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable)) + 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+ 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+ 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+ 
+  theme_solarized(light=FALSE)+
+  theme(legend.title=element_blank(), text=white.text, axis.title=white.text, title=white.text, axis.text=white.text)+
+  labs(y="Daily Return", x="Time")+
+  scale_colour_manual(values=mycolours)
+#ggsave(
+ # "MA_stocksDAX",
+#  plot = last_plot(),
+ # device = "jpeg",
+ # dpi = 500
+)
+
+
+#moving vola
+
+#manual version, yearly
+avg_vol <- function(ret) {
+  avg <- c()
+  for (i in 500:length(ret)) {
+    avg[(i-499)] <- sd(ret[(i-499):i])*sqrt(250)
+  }
+  return(avg)
+}
+
+HFDAX_vola_yearly <- cbind("Date"=ALL_returns[500:nrow(ALL_returns),1],data.frame(apply(ALL_returns[,c(2:9,20)],2,avg_vol)))
+stocksDAX_vola_yearly <- cbind("Date"=ALL_returns[500:nrow(ALL_returns),1],data.frame(apply(ALL_returns[,c(10:20)],2,avg_vol)))
+
+#roll_sd version, daily
+HFDAX_vola_daily <- cbind("Date"=ALL_returns[1:nrow(ALL_returns),1],data.frame(roll_sd(as.matrix(ALL_returns[,c(2:9,20)]),500)))
+HFDAX_vola_daily <- HFDAX_vola_daily[-c(1:499),]
+stocksDAX_vola_daily <- cbind("Date"=ALL_returns[1:nrow(ALL_returns),1],data.frame(roll_sd(as.matrix(ALL_returns[,c(10:20)]),500)))
+stocksDAX_vola_daily <- stocksDAX_vola_daily[-c(1:499),]
+
+#plot roll_sd version, HF and DAX, 500 days
+HFDAX_vola_daily_plot <- melt(data = HFDAX_vola_daily, id.vars = "Date")
+ggplot(data=HFDAX_vola_daily_plot, aes(x=Date)) + 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+ 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable)) + 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+ 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+ 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable)) + 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+ 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+ 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+ 
+  theme_solarized(light=FALSE)+
+  theme(legend.title=element_blank(), text=white.text, axis.title=white.text, title=white.text, axis.text=white.text)+
+  labs(y="Daily Volatility", x="Time")+
+  scale_colour_manual(values=mycolours)
+#ggsave(
+#  "VOL_HFDAX",
+#plot = last_plot(),
+#  device = "jpeg",
+#  dpi = 500
+)
+#theme
+nb.cols <- 11
+mycolours2 <- c(brewer.pal(11, "Accent")[c(1,2,3,4,5,6,7,8,9,10,11)])
+mycolours3 <- colorRampPalette(plasma(800))(nb.cols)
+mycolours4 <- c(rainbow(11))
+mycolours5 <- colorRampPalette(brewer.pal(8, "Set2"))(nb.cols)
+mycolours6 <- colorRampPalette(brewer.pal(8, "PiYG"))(nb.cols)
+white.text <- element_text(color = "white")
+
+
+#plot roll_sd version, Dax and stocks, 500 days
+stocksDAX_vola_daily_plot <- melt(data = stocksDAX_vola_daily, id.vars = "Date")
+ggplot(data=stocksDAX_vola_daily_plot, aes(x=Date)) + 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+ 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable)) + 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+ 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+ 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable)) + 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+ 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+ 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+ 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+ 
+  theme_solarized(light=FALSE)+
+  theme(legend.title=element_blank(), text=white.text, axis.title=white.text, title=white.text, axis.text=white.text)+
+  labs(y="Daily Volatility", x="Time")+
+  scale_colour_manual(values=mycolours)
+#ggsave(
+ # "VOL_stocksDAX",
+#  plot = last_plot(),
+#  device = "jpeg",
+#  dpi = 500
+)
+
+#####mu sigma plot
+
+# combine in mu-sigma-plot
+tmp <- filter(HFDAX_avg_daily_plot, variable!= "DAX10")
+tmp2 <- filter(HFDAX_avg_daily_plot, variable == "DAX10")
+tmp3 <- filter(stocksDAX_avg_daily_plot, variable != "DAX10")
+ALL_mu <- rbind(cbind(tmp,"Category"="HF"), cbind(tmp3, "Category"="Stocks"), cbind(tmp2, "Category"="DAX10"))
+rm(tmp, tmp2, tmp3)
+tmp <- filter(HFDAX_vola_daily_plot, variable!= "DAX10")
+tmp2 <- filter(HFDAX_vola_daily_plot, variable == "DAX10")
+tmp3 <- filter(stocksDAX_vola_daily_plot, variable != "DAX10")
+ALL_vol <- rbind(cbind(tmp,"Category"="HF"), cbind(tmp3, "Category"="Stocks"),cbind(tmp2, "Category"="DAX10"))
+rm(tmp, tmp2, tmp3)
+ALL_mu_sigma <- merge(ALL_mu,ALL_vol, by= c("Date","variable","Category"))
+ALL_mu_sigma <- ALL_mu_sigma[order(as.character(ALL_mu_sigma$Category), decreasing = TRUE),]
+
+mycolours8 <- c(mycolours[c(1,9,2)])
+ggplot(data=ALL_mu_sigma, aes(x=value.y,y=value.x, color= Category, fill=Category)) +
+    geom_point(shape=16, alpha=0.5) +
+    theme_solarized(light=FALSE)+
+    theme(legend.title=element_blank(), text=white.text, axis.title=white.text, title=white.text, axis.text=white.text)+
+    labs(y="Volatility", x="Return")+
+    scale_colour_manual(values=mycolours8)+
+    scale_fill_manual(values=mycolours8)
+    
+#ggsave(
+#  "MUSIGMA_all",
+ # plot = last_plot(),
+ # device = "jpeg",
+  #dpi = 500
+)
+  
+
+# compute sharpe ratio for rolling window
+sr <- function(r,mu,sigma) {
+  sharpe <- (mu-r)/sigma
+}
+
+
+
+# compute skewness for rolling window
+avg_skew <- function(ret) {
+  avg <- c()
+  for (i in 500:length(ret)) {
+    avg[(i-499)] <- skewness(ret[(i-499):i])
+  }
+  return(avg)
+}
+
+HFDAX_skew_daily <- cbind("Date"=ALL_returns[500:nrow(ALL_returns),1],data.frame(apply(ALL_returns[,c(2:9,20)],2,avg_skew)))
+stocksDAX_skew_daily <- cbind("Date"=ALL_returns[500:nrow(ALL_returns),1],data.frame(apply(ALL_returns[,c(10:20)],2,avg_skew)))
+
+#plot skew HFDAX
+HFDAX_skew_daily_plot <- melt(data = HFDAX_skew_daily, id.vars = "Date")
+ggplot(data=HFDAX_skew_daily_plot, aes(x=Date)) + 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+ 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable)) + 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+ 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+ 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable)) + 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+ 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+ 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+ 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+ 
+  theme_solarized(light=FALSE)+
+  theme(legend.title=element_blank(), text=white.text, axis.title=white.text, title=white.text, axis.text=white.text)+
+  labs(y="Daily Skewness", x="Time")+
+  scale_colour_manual(values=mycolours)
+#ggsave(
+ # "SKEW_HFDAX",
+ # plot = last_plot(),
+ # device = "jpeg",
+#  dpi = 500
+)
+
+#plot skew stocksDAX
+stocksDAX_skew_daily_plot <- melt(data = stocksDAX_skew_daily, id.vars = "Date")
+ggplot(data=stocksDAX_skew_daily_plot, aes(x=Date)) + 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+ 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable)) + 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+ 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+ 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable)) + 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+ 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+ 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+ 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+ 
+  theme_solarized(light=FALSE)+
+  theme(legend.title=element_blank(), text=white.text, axis.title=white.text, title=white.text, axis.text=white.text)+
+  labs(y="Daily Skewness", x="Time")+
+  scale_colour_manual(values=mycolours)
+#ggsave(
+ # "SKEW_stocksDAX",
+ # plot = last_plot(),
+ # device = "jpeg",
+ # dpi = 500
+#)
+
+
+# compute kurtosis for rolling window
+avg_kurt <- function(ret) {
+  avg <- c()
+  for (i in 500:length(ret)) {
+    avg[(i-499)] <- kurtosis(ret[(i-499):i])
+  }
+  return(avg)
+}
+
+HFDAX_kurt_daily <- cbind("Date"=ALL_returns[500:nrow(ALL_returns),1],data.frame(apply(ALL_returns[,c(2:9,20)],2,avg_kurt)))
+stocksDAX_kurt_daily <- cbind("Date"=ALL_returns[500:nrow(ALL_returns),1],data.frame(apply(ALL_returns[,c(10:20)],2,avg_kurt)))
+
+#plot kurt HFDAX
+HFDAX_kurt_daily_plot <- melt(data = HFDAX_kurt_daily, id.vars = "Date")
+ggplot(data=HFDAX_kurt_daily_plot, aes(x=Date)) + 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+ 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable)) + 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+ 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+ 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable)) + 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+ 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+ 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+ 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+ 
+  theme_solarized(light=FALSE)+
+  theme(legend.title=element_blank(), text=white.text, axis.title=white.text, title=white.text, axis.text=white.text)+
+  labs(y="Daily Kurtosis", x="Time")+
+  scale_colour_manual(values=mycolours)
+#ggsave(
+ # "KURT_HFDAX",
+ # plot = last_plot(),
+ # device = "jpeg",
+ # dpi = 500
+)
+
+#plot kurt stocksDAX
+stocksDAX_kurt_daily_plot <- melt(data = stocksDAX_kurt_daily, id.vars = "Date")
+ggplot(data=stocksDAX_kurt_daily_plot, aes(x=Date)) + 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+ 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable)) + 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+ 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+ 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable)) + 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+ 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+ 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+ 
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+
+  geom_line(key_glyph="rect",aes(y=value, colour=variable, group=variable))+ 
+  theme_solarized(light=FALSE)+
+  theme(legend.title=element_blank(), text=white.text, axis.title=white.text, title=white.text, axis.text=white.text)+
+  labs(y="Daily Kurtosis", x="Time")+
+  scale_colour_manual(values=mycolours)
+#ggsave(
+ # "KURT_stocksDAX",
+#plot = last_plot(),
+ # device = "jpeg",
+#  dpi = 500
+)
+
+################### Correlation ##############
+
+
+# compute correlation
+HFDAX_cor <- cor(ALL_returns[,c(2:9,20)])
+stocksDAX_cor <- cor(ALL_returns[,c(10:20)])
+ALL_cor <- cor(ALL_returns[,c(2:20)])
+
+# corr matrix
+corrplot(HFDAX_cor, method = "number",col=colorRampPalette(brewer.pal(5, "Spectral"))(nb.cols), bg="#002a36", tl.col = "#002a36")
+corrplot(stocksDAX_cor, method = "number",col=colorRampPalette(brewer.pal(5, "Spectral"))(nb.cols), bg="#002a36", tl.col = "#002a36")
+
+# corr histogramm
+#cor_hf_list <- c()
+#for(i in 1:(nrow(HFDAX_cor)-3)) {
+ # for (j in (i+1):(ncol(HFDAX_cor)-2)) {
+  #  cor_hf_list <- c(cor_hf_list, HFDAX_cor[i,j])
+  #}
+#}
+
+#cor_dax_list <- c()
+#for(i in 1:(nrow(stocksDAX_cor)-1)) { 
+ # for (j in (i+1):ncol(stocksDAX_cor)) {
+  #  cor_dax_list <- c(cor_dax_list, stocksDAX_cor[i,j])
+#  }
+#}
+#min(cor_hf_list)
+#max(cor_hf_list)
+#min(cor_dax_list)
+#max(cor_dax_list)
+#hist(cor_hf_list,main="Correlation Histogram",xlab="Correlations of Hedge Fund Indices", xlim=c(-1,1), breaks=10, col="blue")
+#hist(cor_dax_list, main="Correlation Histogram",xlab="Correlations of DAX10 Stocks",xlim=c(-1,1), breaks = 10, col="blue")
+
+############## Eigentvectors #####################
+
+# give the variance of the system
+HF_returns_noG <- ALL_returns[,c(2:9)]
+HF_returns_noG <- subset(HF_returns_noG, select=-c(5))
+HF_cov <- cov(HF_returns_noG)
+stocks_cov <- cov(ALL_returns[,c(10:19)])
+
+HF_evl <- eigen(HF_cov)$values
+stocks_evl <- eigen(stocks_cov)$values
+
+#direction of variance
+HF_evc <- eigen(HF_cov)$vectors
+stocks_evc <- eigen(stocks_cov)$vectors
+
+colnames(HF_evc) <- HF_evl
+colnames(stocks_evc) <- stocks_evl
+
+xtable(HF_evc, type = "latex", tabular.environment="longtable", digits = 3)
+xtable(stocks_evc, type = "latex", tabular.environment="longtable", digits = 3)
+
+# normalize eigenvalues so they add up to 1 to get percentage
+snr_hf <- HF_evl/sum(HF_evl)
+round(snr_hf,3)*100
+cum_snr_hf <- cumsum(HF_evl)/sum(HF_evl)
+snr_dax <- stocks_evl/sum(stocks_evl)
+round(snr_dax,3)*100
+cum_snr_dax <- cumsum(stocks_evl)/sum(stocks_evl)
+
+# plot explained variance
+var_dax <- cbind("CumVar"=cum_snr_dax,"PrinComp" = c(1:10))
+var_hf <- cbind("CumVar"=cum_snr_hf,"PrinComp" = c(1:7))
+p1 <- ggplot(data=data.frame(var_dax), aes(x=PrinComp,y= CumVar))+
+  geom_bar(position="dodge",stat = "identity", fill=mycolours[3], colour=mycolours[3], alpha=0.7)+ 
+  theme_solarized(light=FALSE)+
+  theme(legend.title=element_blank(), text=white.text, axis.title=white.text, title=white.text, axis.text=white.text)+
+  labs(x="Stocks in DAX10", y=element_blank())+
+  scale_x_discrete(name="Stocks in DAX10",labels=c(1:10),limits=c(1:10))+
+  coord_fixed(ratio = 6.39)
+
+stocks_evl_test <- stocks_evl/10^(-3)
+stocks_evl_plot <- data.frame(cbind(stocks_evl_test, "number"=seq(from=1, to=10,by=1)))
+p3 <- ggplot(data=stocks_evl_plot, aes(x=number, y=stocks_evl_test))+
+  geom_bar(position="dodge",stat = "identity", fill=mycolours[3], colour=mycolours[3], alpha=0.7)+ 
+  theme_solarized(light=FALSE)+
+  theme(legend.title=element_blank(), text=white.text, axis.title=white.text, title=white.text, axis.text=white.text)+
+  labs(x="Stocks in DAX10", y=expression(paste("Eigenvalues / ", 10^-3,")")))+
+  scale_x_discrete(name="Stocks in DAX10",labels=c(1:10),limits=c(1:10))+
+  coord_fixed(ratio = 3.26)
+
+p2 <- ggplot(data=data.frame(var_hf), aes(x=PrinComp,y= CumVar))+
+  geom_bar(position="dodge",stat = "identity", fill=mycolours[1], colour=mycolours[1], alpha=0.7)+ 
+  theme_solarized(light=FALSE)+
+  theme(legend.title=element_blank(), text=white.text, axis.title=white.text, title=white.text, axis.text=white.text)+
+  labs(x="Hedge Fund Indices", y="Cumulative Explained Variation")+
+  scale_x_discrete(name="Hedge Fund Indices",labels=c(1:7),limits=c(1:7))+
+  coord_fixed(ratio = 4.64)
+
+HF_evl_test <- HF_evl/10^(-5)
+hf_evl_plot <- data.frame(cbind(HF_evl_test, "number"=seq(from=1, to=7,by=1)))
+p4 <- ggplot(data=hf_evl_plot, aes(x=number, y=HF_evl_test))+
+  geom_bar(position="dodge",stat = "identity", fill=mycolours[1], colour=mycolours[1], alpha=0.7)+ 
+  theme_solarized(light=FALSE)+
+  theme(legend.title=element_blank(), text=white.text, axis.title=white.text, title=white.text, axis.text=white.text)+
+  labs(x="Hedge Fund Indices", y=expression(paste("Eigenvalues / ", 10^-5)))+
+  scale_x_discrete(name="Hedge Fund Indices",labels=c(1:7),limits=c(1:7))+
+  coord_fixed(ratio = 1.66)
+
+p5 <- grid.arrange(p4, p2, nrow = 1)
+p6 <- grid.arrange(p3, p1, nrow = 1)
+
+ggsave(
+  "EXPVAR_HF",
+   plot = p5,
+  device = "jpeg",
+  dpi = 500
+)
+
+ggsave(
+  "EXPVAR_DAX",
+  plot = p6,
+  device = "jpeg",
+  dpi = 500
+)
+
+xtable(HF_evl_test), type = "latex", tabular.environment="longtable", digits = 3)
+xtable(data.frame(stocks_evl_test), type = "latex", tabular.environment="longtable", digits = 3)
+
+xtable(data.frame(snr_hf), type = "latex", tabular.environment="longtable", digits = 3)
+xtable(data.frame(snr_dax), type = "latex", tabular.environment="longtable", digits = 3)
+
+#####################(C)VaR
+
+#daily
+
+#compare histogram
+var_hist <- melt(data = ALL_returns, id.vars = "Date")
+
+var_hist_comp <- rbind(filter(var_hist, variable == "DAX10"), filter(var_hist, variable == "GL"))
+ggplot(var_hist_comp, aes(x=value, colour=variable, fill=variable)) + 
+  geom_histogram(position="identity", alpha=0.7, bins=120)+
+  theme_solarized(light=FALSE)+
+  theme(legend.title=element_blank(), text=white.text, axis.title=white.text, title=white.text, axis.text=white.text)+
+  labs(y="Count", x="Returns")+
+  scale_colour_manual(values=mycolours)+
+  scale_fill_manual(values=mycolours)+
+  xlim(-0.1,0.1)
+
+#ggsave(
+ # "HIST_all",
+#  plot = last_plot(),
+#  device = "jpeg",
+#  dpi = 500
+)
+
+VaR <- apply(ALL_returns[,2:20],2,function(x) quantile(x,probs=0.05))
+CVaR <- apply(ALL_returns[,2:20],2,function(x) {new <- x[which(x <= quantile(x,probs=0.05))]; mean(new)})
+
+var_cvar <- rbind("VaR" = VaR, "CVaR" = CVaR)
+colnames(var_cvar) <- colnames(ret1_all[,2:20])
+xtable(var_cvar[,c(1:8)], digits = 3)
+xtable(var_cvar[,c(9:16)],digits = 3)
+xtable(var_cvar[,c(17:19)],digits = 3)
+
+##############omega function
+
+
+omega <- function(r,ret) {
+  omega_help <- diff(ret)
+  denom <- seq(from=(1/length(ret)), to =((length(ret)-1)/length(ret)), by=(1/length(ret)))
+  num <- 1-denom
+  index <- max(which(ret < r))
+  D <- sum(omega_help[1:index]*denom[1:index])
+  N <- sum(omega_help[(index+1):length(omega_help)]*num[(index+1):length(omega_help)])
+  return(N/D)
+}
+
+omega_plot <- function(data,name) {
+  data <- sort(data)
+  r_achse <- data[2:length(data)]
+  Omega <- c()
+  for(i in 1:length(r_achse)) {
+    Omega[i] <- omega(r_achse[i],data)
+  }
+  return(data.frame(cbind("Return"=r_achse, "Omega"=Omega, "Type" = name)))
+}
+
+omega_curve_all <- do.call(rbind, lapply(2:20, function(x) omega_plot(ALL_returns[,x],colnames(ALL_returns)[x])))
+
+g1 <-ggplot(data=(omega_curve_all %>% filter(Type %in% colnames(ALL_returns[,c(2:9,20)]))),aes(x=as.numeric(as.character(Return)),y=as.numeric(as.character(Omega)),colour=Type)) +
+    geom_line(key_glyph="rect", size=0.6)+
+    xlim(c(-0.005,0.01)) +
+    ylim(c(0,3.5))+
+    theme_solarized(light=FALSE)+
+    theme(legend.title=element_blank(), text=white.text, axis.title=white.text, title=white.text, axis.text=white.text)+
+    scale_color_manual(values=mycolours) +
+    labs(x="Benchmark Return", y="Omega")
+g2 <- ggplot(data=(omega_curve_all %>% filter(Type %in% colnames(ALL_returns[,c(10:19, 20)]))),aes(x=as.numeric(as.character(Return)),y=as.numeric(as.character(Omega)),colour=Type)) + 
+    geom_line(key_glyph="rect", size=0.6)+
+    xlim(c(-0.005,0.01)) +
+    ylim(c(0,3.5))+
+    theme_solarized(light=FALSE)+
+    theme(legend.title=element_blank(), text=white.text, axis.title=white.text, title=white.text, axis.text=white.text)+
+    scale_color_manual(values=mycolours) +
+    labs(x="Benchmark Return", y=element_blank())
+
+g3 <- grid.arrange(g1,g2, nrow=1)
+
+#ggsave(
+ # "OMEGA_all",
+ # plot = g3,
+ # device = "jpeg",
+ # dpi = 500
+)
+
+############################# PORTFOLIO OPT #################
+
+
+# returns relevant for portfolio construction: choose Hedge Funds and DAX10
+ret_pc <- ALL_returns[,c(1:9,20)]
+price_pc <- INDEX_prices
+price_pc_nb <- price_pc %>% filter(Date >= "2011-08-19") # to evaluate strategies
+ret_eval <- (ret_pc %>% filter(Date >= "2011-08-22"))
+ret_pc_7 <- (ret_pc %>% filter(Date < "2011-08-22"))
+ret_pc_2 <- (ret_pc_7 %>% filter(Date > "2007-12-31"))
+sigma_7 <- cov(ret_pc_7[,2:10])
+sigma_2 <- cov(ret_pc_2[,2:10])
+
+
+##min(−dT b + 1/2bT Db) with the constraints AT b >= b0.
+# a) min variance
+dvec <- c(rep(0,9)) #erster Teil fällt weg
+Amat <- rbind(c(rep(1,9)), diag(x = 1, 9, 9)) #erste Zeile = gewichte gleich eins, ab zweite zeile = no short selling
+bvec <- c(1,rep(0,9)) 
+weights_min_var_7 <- solve.QP(sigma_7,dvec,t(Amat),bvec=bvec)$solution
+weights_min_var_2 <- solve.QP(sigma_2,dvec,t(Amat),bvec=bvec)$solution
+
+# b) Sharpe Ratio: build own maximization function, set return to 1%
+sr_goal <- function(w) {
+  ret_w <- mean(as.matrix(ret_pc_7[,2:10]) %*% matrix(w))
+  sigma_w <- t(matrix(w)) %*% sigma_7 %*% matrix(w)
+  return(-(ret_w-0.01/250)/sigma_w) # negativ wegen minimierung
+}
+# 
+# sr_goal2 <- function(w) {
+#   ret_w <- mean(as.matrix(ret_pc[,2:10]) %*% matrix(w))
+#   sigma_w <- t(matrix(w)) %*% sigma %*% matrix(w)
+#   return(sigma_w/(ret_w-0.01/250)) # invers wegen minimierung
+# }
+
+# machen beide ähnliches
+
+sr_goal_nb <- function(w) {
+  ret_w <- mean(as.matrix(ret_pc_2[,2:10]) %*% matrix(w))
+  sigma_w <- t(matrix(w)) %*% sigma_2 %*% matrix(w)
+  return(-(ret_w-0.01/250)/sigma_w) # negativ wegen minimierung
+}
+
+start <- c(rep(1/9,9)) # start with equal weight
+start2 <- c(0,0,0,0,0,0,0.5,0.5,0) # start with weights to get right M and MA portfolio
+lower <- c(rep(0,9)) # no short selling
+upper <- c(rep(1,9)) # no leverage
+
+weights_sr_7 <- fmincon(start2, sr_goal, Aeq=t(matrix(c(rep(1,9)))), beq=1, lb= lower, ub = upper)$par
+weights_sr_2 <- fmincon(start2, sr_goal_nb, Aeq=t(matrix(c(rep(1,9)))), beq=1, lb= lower, ub = upper)$par
+
+# c) equal risk contribution
+
+erc_goal <- function(w) {
+  erc <- matrix(w) * sigma_7 %*% matrix(w)
+  return(sd(erc)*(10^11)) # sonst quasi null und stoppt direkt
+}
+
+erc_goal_nb <- function(w) {
+  erc <- matrix(w) * sigma_2 %*% matrix(w)
+  return(sd(erc)*(10^11))
+}
+
+weights_erc_7 <- fmincon(start, erc_goal, Aeq=t(matrix(c(rep(1,9)))), beq=1, lb= lower, ub = upper)$par
+weights_erc_2 <- fmincon(start, erc_goal_nb, Aeq=t(matrix(c(rep(1,9)))), beq=1, lb= lower, ub = upper)$par
+
+# check if it worked
+matrix(weights_erc_7) * sigma_7 %*% matrix(weights_erc_7)
+matrix(weights_erc_2) * sigma_2 %*% matrix(weights_erc_2)
+
+# put all together
+portfolio_weights <- as.data.frame(rbind("OneOverN" = start, "HighestSR7" = weights_sr_7,"HighestSR2" = weights_sr_2, "MinVar7" = weights_min_var_7,"MinVar2" = weights_min_var_2, "ERC7" = weights_erc_7, "ERC2" = weights_erc_2 ))
+colnames(portfolio_weights) <- colnames(ret_pc[,2:10])
+xtable(portfolio_weights, digits = 3)
+portfolio_weights$Portfolio <- rownames(portfolio_weights)
+portfolio_weights_long <- portfolio_weights %>% gather("Type","Weight",-Portfolio)
+
+ggplot(data=portfolio_weights_long, aes(x=Type,y= Weight, fill=Portfolio, colour=Portfolio)) +
+  geom_bar(key_glyph="rect", position="dodge",stat = "identity", alpha=0.7)+ 
+  scale_x_discrete(name="Asset",breaks=colnames(ret_pc[,2:10]), labels=colnames(ret_pc[,2:10])) + 
+  scale_color_manual(values=mycolours, labels = c("ERC_08-11", "ERC_03-11", "SR_08-11", "SR_03-11", "MinVar_08-11", "MinVar_03-11", "1/N")) +
+  scale_fill_manual(values=mycolours, labels = c("ERC_08-11", "ERC_03-11", "SR_08-11", "SR_03-11", "MinVar_08-11", "MinVar_03-11", "1/N"))+
+  theme_solarized(light=FALSE)+
+  theme(legend.title=element_blank(), text=white.text, axis.title=white.text, title=white.text, axis.text=white.text)
+
+#ggsave(
+#  "WEIGHTS_all",
+ # plot = last_plot(),
+ # device = "jpeg",
+ # dpi = 500
+#)
+
+#compute prices of portfolios --> make start price the same?
+start_weights <- function(w) {
+  x <- 100000/price_pc_nb[1,2:10]*w
+  return(as.numeric(x))
+}
+
+
+price_pc_nb$OneOverN <- as.matrix(price_pc_nb[,2:10]) %*% matrix((start_weights(start)))
+price_pc_nb$HighestSR7 <- as.matrix(price_pc_nb[,2:10]) %*% matrix(start_weights(weights_sr_7))
+price_pc_nb$HighestSR2 <- as.matrix(price_pc_nb[,2:10]) %*% matrix(start_weights(weights_sr_2))
+price_pc_nb$MinVar7 <- as.matrix(price_pc_nb[,2:10]) %*% matrix(start_weights(weights_min_var_7))
+price_pc_nb$MinVar2 <- as.matrix(price_pc_nb[,2:10]) %*% matrix(start_weights(weights_min_var_2))
+price_pc_nb$ERC7 <- as.matrix(price_pc_nb[,2:10]) %*% matrix(start_weights(weights_erc_7))
+price_pc_nb$ERC2 <- as.matrix(price_pc_nb[,2:10]) %*% matrix(start_weights(weights_erc_2))
+
+price_imp <- price_pc_nb[,c(1,11:17)]
+ret_imp <- cbind("Date"=as.Date(price_imp[2:nrow(price_imp),1]),data.frame(apply(log(price_imp[,2:8]),2,diff)))
+
+price_imp_long <- price_imp %>% gather("Type","Price",-Date)
+ret_imp_long <- ret_imp %>% gather("Type","Return",-Date)
+
+ggplot(data=price_imp_long, aes(x=Date, y=Price, color= Type)) + 
+  geom_line(key_glyph="rect")  + 
+  scale_color_manual(values=mycolours, labels = c("ERC_08-11", "ERC_03-11", "SR_08-11", "SR_03-11", "MinVar_08-11", "MinVar_03-11", "1/N")) +
+  scale_fill_manual(values=mycolours)+
+  theme_solarized(light=FALSE)+
+  theme(legend.title=element_blank(), text=white.text, axis.title=white.text, title=white.text, axis.text=white.text)
+
+#ggsave(
+ # "PRICEDEV_all",
+  #plot = last_plot(),
+ # device = "jpeg",
+ # dpi = 500
+#)
+
+# compare statistics
+# a) estimated mean
+mean2_HighestSR <- apply(ret_pc_2[,2:10],2,mean) %*% weights_sr_2
+mean7_HighestSR <- apply(ret_pc_7[,2:10],2,mean) %*% weights_sr_7
+mean2_OneOverN <- apply(ret_pc_2[,2:10],2,mean) %*% start
+mean7_OneOverN <- apply(ret_pc_7[,2:10],2,mean) %*% start
+mean2_ERC <- apply(ret_pc_2[,2:10],2,mean) %*% weights_erc_2
+mean7_ERC <- apply(ret_pc_7[,2:10],2,mean) %*% weights_erc_7
+mean2_MinVar <- apply(ret_pc_2[,2:10],2,mean) %*% weights_min_var_2
+mean7_MinVar <- apply(ret_pc_7[,2:10],2,mean) %*% weights_min_var_7
+
+est_means <- cbind(mean7_HighestSR,mean2_HighestSR,mean7_MinVar,mean2_MinVar,mean7_ERC,mean2_ERC,mean7_OneOverN,mean2_OneOverN)
+# aa) true mean
+true_means <- apply(ret_imp[,2:8],2,mean)
+
+# b) estimated vol
+sd2_HighestSR <- sqrt(weights_sr_2 %*% sigma_2 %*% weights_sr_2)
+sd7_HighestSR <- sqrt(weights_sr_7 %*% sigma_7 %*% weights_sr_7)
+sd2_OneOverN <- sqrt(start %*% sigma_2 %*% start)
+sd7_OneOverN <- sqrt(start %*% sigma_7 %*% start)
+sd2_ERC <- sqrt(weights_erc_2 %*% sigma_2 %*% weights_erc_2)
+sd7_ERC <- sqrt(weights_erc_7 %*% sigma_7 %*% weights_erc_7)
+sd2_MinVar <- sqrt(weights_min_var_2 %*% sigma_2 %*% weights_min_var_2)
+sd7_MinVar <- sqrt(weights_min_var_7 %*% sigma_7 %*% weights_min_var_7)
+
+est_vol <- cbind(sd7_HighestSR,sd2_HighestSR,sd7_MinVar,sd2_MinVar,sd7_ERC,sd2_ERC,sd7_OneOverN,sd2_OneOverN)
+
+# bb) true vol
+true_vol <- apply(ret_imp[,2:8],2,sd) 
+
+# put everything together
+stat_all <- as.data.frame(rbind("True Mean" = true_means, "True Std. Dev."=true_vol))
+stat_all$OneOverN7 <- stat_all$OneOverN
+stat_all$OneOverN2 <- stat_all$OneOverN
+stat_all$OneOverN <- NULL
+colnames(est_means) <- colnames(stat_all)
+colnames(est_vol) <- colnames(stat_all)
+stat_all <- rbind(stat_all, "Estimated Mean" = est_means,"Estimated Std .Dev." =est_vol)
+xtable(stat_all[c(1,3,2,4),], digits = 7)
+
+
+
+#############
